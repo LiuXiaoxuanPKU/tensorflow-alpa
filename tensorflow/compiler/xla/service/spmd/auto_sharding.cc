@@ -7,8 +7,6 @@
 #include "tensorflow/compiler/xla/service/hlo_ordering.h"
 #include "tensorflow/compiler/xla/service/hlo_sharding_util.h"
 #include "tensorflow/compiler/xla/service/spmd/auto_sharding_strategy.h"
-#include <string.h>
-#include <typeinfo>
 
 namespace xla {
 namespace spmd {
