@@ -1734,6 +1734,7 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
   // Call the solver function in python
   size_t num_edges = E_np.size() / 2;
   std::vector<int64_t> s_val, e_val;
+  std::vector<std::vector<int64_t>> R_val;
   double objective;
 
   std::vector<int> elementwise_np;
@@ -1771,9 +1772,10 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
     }
     py::tuple tuple_ret = ret;
 
-    py::object s_val_obj = tuple_ret[0], e_val_obj = tuple_ret[1];
-    objective = py::cast<double>(tuple_ret[2]);
+    py::object s_val_obj = tuple_ret[0], e_val_obj = tuple_ret[1], R_val_obj = tuple_ret[2];
+    objective = py::cast<double>(tuple_ret[3]);
     py::array_t<int> s_val_array = s_val_obj, e_val_array = e_val_obj;
+    py::list R_val_list = R_val_obj;
     auto s_val_unckecked = s_val_array.unchecked<1>();
     auto e_val_unckecked = e_val_array.unchecked<1>();
     for (size_t i = 0; i < N; ++i) {
@@ -1782,10 +1784,14 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
     for (size_t i = 0; i < num_edges; ++i) {
       e_val.push_back(e_val_unckecked(i));
     }
+    // R_vals at stage t
+    for (auto t_R_vals : R_val_list) {
+      R_val.push_back(py::cast<std::vector<int64_t>>(t_R_vals));
+    }
   }
   PyGILState_Release(gstate);
 
-  return std::make_tuple(std::move(s_val), std::move(e_val), objective);
+  return std::make_tuple(std::move(s_val), std::move(e_val), std::move(R_val), objective);
 }
 
 // Set the HloSharding for all instructions according to the ILP solution.
@@ -2265,9 +2271,10 @@ StatusOr<bool> AutoSharding::Run(
 
   // ----- Call the ILP solver -----
   std::vector<int64_t> s_val, e_val;
+  std::vector<std::vector<int64_t>> R_val;
   double objective = -1.0;
   if (!solver_option.load_solution_vector) {
-    std::tie(s_val, e_val, objective) =
+    std::tie(s_val, e_val, R_val, objective) =
         CallSolver(sequence, liveness_set, strategy_map, leaf_strategies,
                    cost_graph, alias_set);
   } else {
@@ -2289,6 +2296,10 @@ StatusOr<bool> AutoSharding::Run(
   // ----- Set sharding for all instructions -----
   SetHloSharding(sequence, strategy_map, cost_graph, s_val, cluster_env,
                  solver_option);
+
+  // // ----- Generate new graph based on recompute stragegy -----
+  // GenerateRecomputeGraph(sequence, strategy_map, cost_graph, R_val, cluster_env,
+  //                solver_option)
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();
