@@ -1970,6 +1970,39 @@ void SetHloSharding(const HloInstructionSequence& sequence,
   }
 }
 
+// void GenerateRecomputeGraph(const HloInstructionSequence& sequence,
+//                             const std::vector<std::vector<int64_t>>& R_val) {
+//   absl::flat_hash_map<int64_t, HloInstructions*>idx_ins;
+//   const std::vector<HloInstruction*>& instructions = sequence.instructions();
+//   for (int t = 0; t < R_val.size(); t++) {
+//     for (const int64_t& recompute_idx : R_val[t]) {
+//       HloInstruction* remat_ins;
+//       if (t == recompute_idx) {
+//         remat_ins = instructions[recompute_idx]; 
+//       } else {
+//         remat_ins = instructions[recompute_idx]->Clone(/*suffix=*/"ckmt").release();
+//         remat_ins->parent->AddInstruction(remat_ins);
+//       }
+//       for (auto operand : remat_ins->operands()) {
+//         HloInstruction* const user_operand = user->multable_operand(user.operand_number);
+//         if (remat_ins == user_operand) {
+//           continue;
+//         }
+//         user->ReplaceOperandWith(user.opernd_num, remat_ins);
+//       }
+//       // insert remat node to a correct location
+//       // pass
+
+//       // update idx_ins;
+//       idx_ins[recompute_idx] = remat_ins;
+
+//       // add control dependency
+
+//     }
+//   }
+// }
+
+
 // Print liveness set for debugging.
 std::string PrintLivenessSet(const LivenessSet& liveness_set) {
   std::ostringstream os;
@@ -2298,8 +2331,7 @@ StatusOr<bool> AutoSharding::Run(
                  solver_option);
 
   // // ----- Generate new graph based on recompute stragegy -----
-  // GenerateRecomputeGraph(sequence, strategy_map, cost_graph, R_val, cluster_env,
-  //                solver_option)
+  // GenerateRecomputeGraph(sequence, R_val);
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();
