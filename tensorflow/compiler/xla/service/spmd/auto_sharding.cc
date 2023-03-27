@@ -1577,7 +1577,7 @@ AliasSet BuildAliasSet(const HloModule* module,
 
 // Serialize parameters of the ILP problem as numpy arrays and call the python
 // solver.
-std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
+std::tuple<std::vector<int64_t>, std::vector<int64_t>, std::vector<std::vector<int64_t>>, double> CallSolver(
     const HloInstructionSequence& sequence, const LivenessSet& liveness_set,
     const StrategyMap& strategy_map, const LeafStrategies& leaf_strategies,
     const CostGraph& cost_graph, const AliasSet& alias_set) {
