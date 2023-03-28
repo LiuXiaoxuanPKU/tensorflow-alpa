@@ -236,7 +236,7 @@ inline void ReplaceOperand(HloInstruction* inst,
                            HloInstruction* new_operand) {
   for (int i = 0; i < inst->operand_count(); ++i) {
     if (inst->operand(i) == old_operand) {
-      inst->ReplaceOperandWith(i, new_operand);
+      TF_CHECK_OK(inst->ReplaceOperandWith(i, new_operand));
     }
   }
 }
@@ -307,7 +307,7 @@ inline void ForceOperandSharding(HloInstruction* inst, int operand_num,
   HloInstruction* replace_with = inst->parent()->AddInstruction(
       HloInstruction::CreateReshape(operand->shape(), operand));
   replace_with->set_sharding(sharding);
-  inst->ReplaceOperandWith(operand_num, replace_with);
+  TF_CHECK_OK(inst->ReplaceOperandWith(operand_num, replace_with));
 }
 
 // Return whether the sharding is fully tiled.

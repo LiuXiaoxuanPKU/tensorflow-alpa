@@ -1742,7 +1742,7 @@ void GenerateReduceScatter(const HloInstructionSequence& sequence,
     HloInstruction* replace_with = inst->parent()->AddInstruction(
         HloInstruction::CreateReshape(inst->shape(), inst));
     replace_with->set_sharding(GetShardingStrategy(inst).output_sharding);
-    inst->ReplaceAllUsesWith(replace_with);
+    TF_CHECK_OK(inst->ReplaceAllUsesWith(replace_with));
   }
 }
 
@@ -1769,19 +1769,19 @@ void RemoveCustomCallMarker(HloModule* module) {
       ins = tuple->mutable_operand(ins->tuple_index());
     }
 
-    raw_ins->ReplaceAllUsesWith(ins);
+    TF_CHECK_OK(raw_ins->ReplaceAllUsesWith(ins));
   }
 
   for (HloInstruction* ins : get_tuple_ins) {
-    entry_computation->RemoveInstruction(ins);
+    TF_CHECK_OK(entry_computation->RemoveInstruction(ins));
   }
 
   absl::flat_hash_set<const HloInstruction*> removed;
   for (HloInstruction* ins : marker_ins) {
     if (!removed.count(ins)) {
       HloInstruction* tmp = ins->mutable_operand(0);
-      entry_computation->RemoveInstruction(ins);
-      entry_computation->RemoveInstruction(tmp);
+      TF_CHECK_OK(entry_computation->RemoveInstruction(ins));
+      TF_CHECK_OK(entry_computation->RemoveInstruction(tmp));
       removed.insert(ins);
     }
   }
@@ -1999,7 +1999,7 @@ void FixMixedMeshShapeResharding(HloInstruction* inst, int operand_num,
     }
   }
 
-  inst->ReplaceOperandWith(operand_num, replace_with);
+  TF_CHECK_OK(inst->ReplaceOperandWith(operand_num, replace_with));
 }
 
 template <typename T>
@@ -2217,7 +2217,7 @@ StatusOr<bool> NormalizeDotDimension(HloModule* module) {
           absl::c_iota(reduce_dims, dot_dnums.lhs_batch_dimensions_size());
           new_dot = AddReduce(new_dot, reduce_dims, dot_type);
           new_dot = AsType(new_dot, dot->shape().element_type());
-          dot->parent()->ReplaceInstruction(dot, new_dot);
+          TF_CHECK_OK(dot->parent()->ReplaceInstruction(dot, new_dot));
         } else if (lhs_space_dims.size() == 0 || rhs_space_dims.size() == 0) {
           // Normalize dot.1: f32[128] = dot([128], [128, 64]) to
           //           dot.1: f32[1, 128] = dot([1, 128], [128, 64])
@@ -2273,7 +2273,7 @@ StatusOr<bool> NormalizeDotDimension(HloModule* module) {
               HloInstruction::CreateDot(new_dot_shape, new_lhs, new_rhs,
                                         new_dnums, ins->precision_config()));
           auto new_ins = HloInstruction::CreateReshape(ins->shape(), new_dot);
-          ins->parent()->ReplaceWithNewInstruction(ins, std::move(new_ins));
+          TF_CHECK_OK(ins->parent()->ReplaceWithNewInstruction(ins, std::move(new_ins)));
         }
       }
     }

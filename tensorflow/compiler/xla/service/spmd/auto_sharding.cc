@@ -1970,37 +1970,66 @@ void SetHloSharding(const HloInstructionSequence& sequence,
   }
 }
 
-// void GenerateRecomputeGraph(const HloInstructionSequence& sequence,
-//                             const std::vector<std::vector<int64_t>>& R_val) {
-//   absl::flat_hash_map<int64_t, HloInstructions*>idx_ins;
-//   const std::vector<HloInstruction*>& instructions = sequence.instructions();
-//   for (int t = 0; t < R_val.size(); t++) {
-//     for (const int64_t& recompute_idx : R_val[t]) {
-//       HloInstruction* remat_ins;
-//       if (t == recompute_idx) {
-//         remat_ins = instructions[recompute_idx]; 
-//       } else {
-//         remat_ins = instructions[recompute_idx]->Clone(/*suffix=*/"ckmt").release();
-//         remat_ins->parent->AddInstruction(remat_ins);
-//       }
-//       for (auto operand : remat_ins->operands()) {
-//         HloInstruction* const user_operand = user->multable_operand(user.operand_number);
-//         if (remat_ins == user_operand) {
-//           continue;
-//         }
-//         user->ReplaceOperandWith(user.opernd_num, remat_ins);
-//       }
-//       // insert remat node to a correct location
-//       // pass
+void GenerateRecomputeGraph(const LeafStrategies& leaf_strategies,
+                            const std::vector<std::vector<int64_t>>& R_val,
+                            StrategyMap& strategy_map) {
+  // key: index in the leaf_strategies, value: instruction*
+  // does not handle HloTuple and its strategies for now
+  absl::flat_hash_map<int64_t, const HloInstruction*>strategyidx_ins;
+  for (auto& [key, value]: strategy_map) {
+    // skip tuple for now
+    if (value.get() -> is_tuple) continue;
+    auto stra_iter = leaf_strategies.end();
+    for (auto it = leaf_strategies.begin(); it != leaf_strategies.end(); ++it) {
+      if (*it == value.get()) {
+        stra_iter = it;
+      }
+    }
+    CHECK(stra_iter != leaf_strategies.end());
+    int idx = stra_iter - leaf_strategies.begin();
+    strategyidx_ins[idx] = key;
+  }
 
-//       // update idx_ins;
-//       idx_ins[recompute_idx] = remat_ins;
+  absl::flat_hash_map<int64_t, HloInstruction*>idx_ins;
+  for (int t = 0; t < R_val.size(); t++) {
+    for (const int64_t& recompute_idx : R_val[t]) {
+      HloInstruction* remat_ins;
+      auto iter = strategyidx_ins.find(t);
+      CHECK(iter != strategyidx_ins.end());
+      if (t == recompute_idx) {
+        remat_ins = const_cast<HloInstruction*>(iter->second);
+      } else {
+        remat_ins = remat_ins->parent()->AddInstruction(iter->second->Clone(/*suffix=*/"ckmt"));
+      }
+      for (int j = 0; j < remat_ins->operands().size(); j++) {
+        int64_t ins_id = -1;
+        auto operand = remat_ins->operands()[j];
+        // check if idx_ins already contains the operand
+        for (const auto& [key, value] : idx_ins) {
+          if (value == operand) {
+            ins_id = key;
+          }
+        }
+        if (ins_id == -1) {
+          // get the strategy id of the operand
+          for (const auto& [key, value] : strategyidx_ins) {
+            if (value == operand) {
+              ins_id = key;
+            }
+          }
+        }
+        CHECK(ins_id != -1);
+        TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(ins_id)->second));
+      }
+      // insert remat node to a correct location
+      // pass
 
-//       // add control dependency
-
-//     }
-//   }
-// }
+      // update idx_ins;
+      idx_ins[recompute_idx] = remat_ins;
+      // add control dependency
+    }
+  }
+}
 
 
 // Print liveness set for debugging.
@@ -2330,8 +2359,8 @@ StatusOr<bool> AutoSharding::Run(
   SetHloSharding(sequence, strategy_map, cost_graph, s_val, cluster_env,
                  solver_option);
 
-  // // ----- Generate new graph based on recompute stragegy -----
-  // GenerateRecomputeGraph(sequence, R_val);
+  // ----- Generate new graph based on recompute stragegy -----
+  GenerateRecomputeGraph(leaf_strategies, R_val, strategy_map);
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();

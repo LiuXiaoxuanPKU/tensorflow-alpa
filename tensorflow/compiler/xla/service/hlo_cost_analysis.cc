@@ -1402,7 +1402,7 @@ void HloCostAnalysis::SetOutputBytesAccessed(ShapeIndex index, float value) {
 
 double CountFlopDotConvOnly(const HloComputation& computation) {
   auto analysis = absl::make_unique<HloCostAnalysis>([](const Shape&) { return 0; });
-  computation.Accept(analysis.get());
+  TF_CHECK_OK(computation.Accept(analysis.get()));
 
   double ret = 0.0;
   for (const HloInstruction* instruction : computation.instructions()) {
