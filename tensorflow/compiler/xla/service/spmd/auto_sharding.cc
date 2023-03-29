@@ -2162,7 +2162,10 @@ void DisableIncompatibleMixedMeshShapeAndForceBatchDim(
 void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::vector<int64_t>& b_val, int64_t T_org,
   StrategyMap& strategy_map, LeafStrategies& leaf_strategies, AliasSet& alias_set, HloModule* module,
   const HloInstructionSequence& sequence) {
+
   int64_t N = leaf_strategies.size();
+  HloComputation* entry_computation = module->entry_computation();
+  const std::vector<HloInstruction*>& instructions = sequence.instructions();
 
   // Initialize segments
   int stage_size = N / T_org;
@@ -2187,21 +2190,79 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
     }
   }
 
+  // Initialize R_val
+  std::vector<std::vector<int64_t>> R_val = std::vector<std::vector<int64_t>> (T, std::vector<int64_t> ());
+  for (int64_t t = 0; t < T; ++t) {
+    for (int64_t i = 0; i < instructions.size(); ++i) {
+      if (A[t][i] == 1) R_val[t].push_back(i);
+    }
+  }
 
-  HloComputation* entry_computation = module->entry_computation();
-  const std::vector<HloInstruction*>& instructions = sequence.instructions();
   std::cout << "CkmtRewrite " << instructions.size() << " " << s_val.size() << " " << a_val.size() << " " << leaf_strategies.size() << std::endl;
 
-  // TODO ALGORITHM
-  for (int64_t t = 0; t < T; ++t) {
-    for (int64_t i = 0; i < segments[t][1] && i < instructions.size(); ++i) {
-      if (A[t][i] == 1) {
-
+  absl::flat_hash_map<int64_t, const HloInstruction*>strategyidx_ins;
+    for (auto& [key, value]: strategy_map) {
+    // skip tuple for now
+    if (value.get() -> is_tuple) continue;
+    auto stra_iter = leaf_strategies.end();
+    for (auto it = leaf_strategies.begin(); it != leaf_strategies.end(); ++it) {
+      if (*it == value.get()) {
+        stra_iter = it;
       }
+    }
+    CHECK(stra_iter != leaf_strategies.end());
+    int idx = stra_iter - leaf_strategies.begin();
+    strategyidx_ins[idx] = key;
+  }
+
+  absl::flat_hash_map<int64_t, HloInstruction*>idx_ins;
+  for (int t = 0; t < R_val.size(); t++) {
+    for (const int64_t& recompute_idx : R_val[t]) {
+      HloInstruction* remat_ins;
+      auto iter = strategyidx_ins.find(t);
+      CHECK(iter != strategyidx_ins.end());
+      if ((recompute_idx >= segments[t][0]) && (recompute_idx < segments[t][1])) {
+        remat_ins = const_cast<HloInstruction*>(iter->second);
+      } else {
+        std::cout <<  HloOpcodeString(iter->second->opcode())<< std::endl;
+        std::cout << recompute_idx << " " << t << " " << segments[t][0] << " " << segments[t][1] << std::endl;
+        remat_ins = remat_ins->parent()->AddInstruction(iter->second->Clone(/*suffix=*/"ckmt"));
+      }
+      for (int j = 0; j < remat_ins->operands().size(); j++) {
+        int64_t ins_id = -1;
+        auto operand = remat_ins->operands()[j];
+        // check if idx_ins already contains the operand
+        for (const auto& [key, value] : idx_ins) {
+          if (value == operand) {
+            ins_id = key;
+          }
+        }
+        if (ins_id == -1) {
+          // get the strategy id of the operand
+          for (const auto& [key, value] : strategyidx_ins) {
+            if (value == operand) {
+              ins_id = key;
+            }
+          }
+        }
+        CHECK(ins_id != -1);
+
+        std::cout << "BEFORE" << std::endl;
+        std::cout <<  HloOpcodeString(remat_ins->opcode())<< std::endl;
+        std::cout << HloOpcodeString(idx_ins.find(ins_id)->second->opcode()) << std::endl;
+        std::cout << "AFTER" << std::endl;
+
+        TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(ins_id)->second));
+      }
+      // insert remat node to a correct location
+      // pass
+
+      // update idx_ins;
+      idx_ins[recompute_idx] = remat_ins;
+      // add control dependency
     }
   }
 }
-
 
 StatusOr<bool> AutoSharding::Run(
     HloModule* module,
@@ -2347,7 +2408,6 @@ StatusOr<bool> AutoSharding::Run(
   }
   
   // REWRITE GRAPH HERE
-  CkmtRewrite(s_val, a_val, b_val, T_org, strategy_map, leaf_strategies, alias_set, module, sequence);
   if (pass_context::GetBool("auto_sharding::print_strategy", false)) {
     std::cerr << PrintAutoShardingSolution(
         sequence, liveness_set, ins_depth_map, strategy_map, leaf_strategies,
@@ -2367,6 +2427,7 @@ StatusOr<bool> AutoSharding::Run(
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();
   // std::cerr << "=====================================" << std::endl;
+  CkmtRewrite(s_val, a_val, b_val, T_org, strategy_map, leaf_strategies, alias_set, module, sequence);
 
   return true;
 }
