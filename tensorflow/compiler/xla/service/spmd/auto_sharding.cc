@@ -1485,6 +1485,13 @@ BuildStrategyAndCost(const HloInstructionSequence& sequence,
     }
   }
 
+  std::cout << "Instruction size in BuildStrategyAndCost " << instructions.size() << std::endl;
+  std::cout << "Leaf strategies size in BuildStrategyAndCost " << leaf_strategies.size() << std::endl;
+
+  for (StrategyVector* sv : leaf_strategies) {
+    std::cout << sv->instruction_id << std::endl;
+  }
+
   return std::make_tuple(std::move(strategy_map), std::move(leaf_strategies),
                          std::move(associative_dot_pairs));
 }
@@ -1577,12 +1584,12 @@ AliasSet BuildAliasSet(const HloModule* module,
 
 // Serialize parameters of the ILP problem as numpy arrays and call the python
 // solver.
-std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
+std::tuple<std::vector<int64_t>, std::vector<int64_t>, double, std::vector<int64_t>, std::vector<int64_t>, int64_t> CallSolver(
     const HloInstructionSequence& sequence, const LivenessSet& liveness_set,
     const StrategyMap& strategy_map, const LeafStrategies& leaf_strategies,
     const CostGraph& cost_graph, const AliasSet& alias_set) {
   const std::vector<HloInstruction*>& instructions = sequence.instructions();
-
+  std::cout << "instructions size " << instructions.size() << std::endl;
   // Serialize edges and edge costs to 1d numpy arrays
   int64_t N = leaf_strategies.size();
   int64_t M =
@@ -1733,7 +1740,8 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
 
   // Call the solver function in python
   size_t num_edges = E_np.size() / 2;
-  std::vector<int64_t> s_val, e_val;
+  std::vector<int64_t> s_val, e_val, a_val, b_val;
+  int64_t T_org;
   double objective;
 
   std::vector<int> elementwise_np;
@@ -1743,6 +1751,7 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
     if (instructions[i]->IsElementwise()) elementwise_np.push_back(i);
     if (HloParameterInstruction::ClassOf(instructions[i])) param_np.push_back(i);
     std::cout << HloOpcodeString(instructions[i]->opcode()) << std::endl;
+    std::cout << instructions[i]->operand_count() << std::endl;
   } 
 
   PyGILState_STATE gstate = PyGILState_Ensure();
@@ -1773,19 +1782,34 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double> CallSolver(
 
     py::object s_val_obj = tuple_ret[0], e_val_obj = tuple_ret[1];
     objective = py::cast<double>(tuple_ret[2]);
+    py::object a_val_obj = tuple_ret[4], b_val_obj = tuple_ret[5];
     py::array_t<int> s_val_array = s_val_obj, e_val_array = e_val_obj;
+    py::array_t<int> a_val_array = a_val_obj, b_val_array = b_val_obj;
     auto s_val_unckecked = s_val_array.unchecked<1>();
     auto e_val_unckecked = e_val_array.unchecked<1>();
+    auto a_val_unchecked = a_val_array.unchecked<1>();
+    auto b_val_unchecked = b_val_array.unchecked<1>();
     for (size_t i = 0; i < N; ++i) {
       s_val.push_back(s_val_unckecked(i));
     }
     for (size_t i = 0; i < num_edges; ++i) {
       e_val.push_back(e_val_unckecked(i));
     }
+
+    py::object T_org_obj = tuple_ret[6];
+    py::int_ T_org_int = T_org_obj;
+    T_org = T_org_int;
+    int64_t T = T_org;
+    if (N % T_org != 0) T = T_org + 1;
+    for (size_t i = 0; i < T*N; ++i) {
+      a_val.push_back(a_val_unchecked(i));
+      b_val.push_back(b_val_unchecked(i));
+    }
   }
+
   PyGILState_Release(gstate);
 
-  return std::make_tuple(std::move(s_val), std::move(e_val), objective);
+  return std::make_tuple(std::move(s_val), std::move(e_val), objective, std::move(a_val), std::move(b_val), std::move(T_org));
 }
 
 // Set the HloSharding for all instructions according to the ILP solution.
@@ -1798,6 +1822,8 @@ void SetHloSharding(const HloInstructionSequence& sequence,
   // Set the HloSharding for every instruction
   const std::vector<HloInstruction*>& instructions = sequence.instructions();
   const Array<int64_t>& device_mesh = cluster_env.device_mesh;
+  std::cout << "instruction size in SetHloShardiing " << instructions.size() << std::endl;
+  std::cout << "s_val size in SetHloSharding " << s_val.size() << std::endl;
 
   for (HloInstruction* inst : instructions) {
     if (inst->has_sharding()) {  // its sharding has been forcibly set
@@ -2133,6 +2159,50 @@ void DisableIncompatibleMixedMeshShapeAndForceBatchDim(
   }
 }
 
+void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::vector<int64_t>& b_val, int64_t T_org,
+  StrategyMap& strategy_map, LeafStrategies& leaf_strategies, AliasSet& alias_set, HloModule* module,
+  const HloInstructionSequence& sequence) {
+  int64_t N = leaf_strategies.size();
+
+  // Initialize segments
+  int stage_size = N / T_org;
+  std::vector<std::vector<int64_t>> segments;
+
+  for (int i = 0; i < T_org; ++i) segments.push_back({i * stage_size, (i + 1) * stage_size});
+  if (N % stage_size > 0) segments.push_back({T_org * stage_size, N});
+  int64_t T = segments.size();
+
+  for (int i = 0; i < T; ++i) {
+    std::cout << segments[i][0] << " " << segments[i][1] << std::endl;
+  }
+
+  std::vector<std::vector<int64_t>> A = std::vector<std::vector<int64_t>> (T, std::vector<int64_t> (N));
+  std::vector<std::vector<int64_t>> B = std::vector<std::vector<int64_t>> (T, std::vector<int64_t> (N));
+
+  // Reshape A and B to be 2-d
+  for (int64_t i = 0; i < T; ++i) {
+    for (int64_t j = 0; j < N; ++j) {
+      A[i][j] = a_val[i*N + j];
+      B[i][j] = b_val[i*N + j];
+    }
+  }
+
+
+  HloComputation* entry_computation = module->entry_computation();
+  const std::vector<HloInstruction*>& instructions = sequence.instructions();
+  std::cout << "CkmtRewrite " << instructions.size() << " " << s_val.size() << " " << a_val.size() << " " << leaf_strategies.size() << std::endl;
+
+  // TODO ALGORITHM
+  for (int64_t t = 0; t < T; ++t) {
+    for (int64_t i = 0; i < segments[t][1] && i < instructions.size(); ++i) {
+      if (A[t][i] == 1) {
+
+      }
+    }
+  }
+}
+
+
 StatusOr<bool> AutoSharding::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
@@ -2209,6 +2279,7 @@ StatusOr<bool> AutoSharding::Run(
                                      ComputationSchedulerToModuleScheduler(
                                          DFSMemoryScheduler)));
   const HloComputation* entry_computation = module->entry_computation();
+  std::cout << "Entry computation instruction count " << entry_computation->instruction_count() << std::endl;
   std::unique_ptr<HloAliasAnalysis> alias_analysis =
       HloAliasAnalysis::Run(module).ValueOrDie();
   AliasMap alias_map =
@@ -2264,16 +2335,19 @@ StatusOr<bool> AutoSharding::Run(
   cost_graph.Simplify();
 
   // ----- Call the ILP solver -----
-  std::vector<int64_t> s_val, e_val;
+  std::vector<int64_t> s_val, e_val, a_val, b_val;
+  int64_t T_org;
   double objective = -1.0;
   if (!solver_option.load_solution_vector) {
-    std::tie(s_val, e_val, objective) =
+    std::tie(s_val, e_val, objective, a_val, b_val, T_org) =
         CallSolver(sequence, liveness_set, strategy_map, leaf_strategies,
                    cost_graph, alias_set);
   } else {
     s_val = pass_context::GetIntVector("auto_sharding::solution_vector");
   }
-
+  
+  // REWRITE GRAPH HERE
+  CkmtRewrite(s_val, a_val, b_val, T_org, strategy_map, leaf_strategies, alias_set, module, sequence);
   if (pass_context::GetBool("auto_sharding::print_strategy", false)) {
     std::cerr << PrintAutoShardingSolution(
         sequence, liveness_set, ins_depth_map, strategy_map, leaf_strategies,
