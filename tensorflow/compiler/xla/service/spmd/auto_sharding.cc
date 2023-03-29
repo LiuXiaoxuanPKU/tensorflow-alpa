@@ -2264,7 +2264,7 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
 
   std::cout << "CkmtRewrite " << instructions.size() << " " << s_val.size() << " " << a_val.size() << " " << leaf_strategies.size() << std::endl;
 
-  absl::flat_hash_map<int64_t, HloInstruction*>idx_ins;
+  absl::flat_hash_map<int64_t, std::vector<HloInstruction*>>idx_ins;
   for (int t = 0; t < T; t++) {
     for (const int64_t& recompute_idx : R_val[t]) {
       // get original instruction given the recompute id
@@ -2285,7 +2285,7 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
         
         // check if idx_ins already contains the operand
         for (const auto& [key, value] : idx_ins) {
-          if (value == operand) {
+          if (std::find(value.begin(), value.end(), operand) != value.end()) {
             strategy_id = key;
           }
         }
@@ -2297,20 +2297,24 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
               strategy_id = iter - leaf_strategies.begin();
           }
         }
+        if (strategy_id == -1) {
+          std::cout << "[Error] " << operand->name() << " does not exist in leaf_strategies" << std::endl;
+        }
         CHECK(strategy_id != -1);
 
-        std::cout << "BEFORE" << std::endl;
-        std::cout <<  HloOpcodeString(remat_ins->opcode())<< std::endl;
-        std::cout << HloOpcodeString(idx_ins.find(strategy_id)->second->opcode()) << std::endl;
-        std::cout << "AFTER" << std::endl;
-
-        TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(strategy_id)->second));
+        TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(strategy_id)->second.back()));
       }
       // insert remat node to a correct location
       // pass
 
       // update idx_ins;
-      idx_ins[recompute_idx] = remat_ins;
+      std::cout << "[INFO] " << t << " Add " << remat_ins->name() << " to idx_ins with id " << recompute_idx << std::endl;
+      if (idx_ins.count(recompute_idx)) {
+        idx_ins[recompute_idx].push_back(remat_ins);
+      } else {
+        std::vector<HloInstruction*> remats = {remat_ins};
+        idx_ins[recompute_idx] = remats;
+      }
       // add control dependency
     }
   }
