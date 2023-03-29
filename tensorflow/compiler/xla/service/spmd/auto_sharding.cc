@@ -1747,11 +1747,13 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double, std::vector<int64
   std::vector<int> elementwise_np;
   std::vector<int> param_np;
 
-  for (int i = 0; i < instructions.size(); ++i) {
-    if (instructions[i]->IsElementwise()) elementwise_np.push_back(i);
-    if (HloParameterInstruction::ClassOf(instructions[i])) param_np.push_back(i);
-    std::cout << HloOpcodeString(instructions[i]->opcode()) << std::endl;
-    std::cout << instructions[i]->operand_count() << std::endl;
+  for (int i = 0; i < leaf_strategies.size(); ++i) {
+    const HloInstruction* ins = instructions[leaf_strategies[i]->instruction_id];
+    if (ins->IsElementwise()) elementwise_np.push_back(i);
+    if (ins->opcode() == HloOpcode::kParameter) {
+      param_np.push_back(i);
+      std::cout << HloOpcodeString(ins->opcode()) << std::endl;
+    }
   } 
 
   PyGILState_STATE gstate = PyGILState_Ensure();
@@ -1990,66 +1992,66 @@ void SetHloSharding(const HloInstructionSequence& sequence,
   }
 }
 
-void GenerateRecomputeGraph(const LeafStrategies& leaf_strategies,
-                            const std::vector<std::vector<int64_t>>& R_val,
-                            StrategyMap& strategy_map) {
-  // key: index in the leaf_strategies, value: instruction*
-  // does not handle HloTuple and its strategies for now
-  absl::flat_hash_map<int64_t, const HloInstruction*>strategyidx_ins;
-  for (auto& [key, value]: strategy_map) {
-    // skip tuple for now
-    if (value.get() -> is_tuple) continue;
-    auto stra_iter = leaf_strategies.end();
-    for (auto it = leaf_strategies.begin(); it != leaf_strategies.end(); ++it) {
-      if (*it == value.get()) {
-        stra_iter = it;
-      }
-    }
-    CHECK(stra_iter != leaf_strategies.end());
-    int idx = stra_iter - leaf_strategies.begin();
-    strategyidx_ins[idx] = key;
-  }
+// void GenerateRecomputeGraph(const LeafStrategies& leaf_strategies,
+//                             const std::vector<std::vector<int64_t>>& R_val,
+//                             StrategyMap& strategy_map) {
+//   // key: index in the leaf_strategies, value: instruction*
+//   // does not handle HloTuple and its strategies for now
+//   absl::flat_hash_map<int64_t, const HloInstruction*>strategyidx_ins;
+//   for (auto& [key, value]: strategy_map) {
+//     // skip tuple for now
+//     if (value.get() -> is_tuple) continue;
+//     auto stra_iter = leaf_strategies.end();
+//     for (auto it = leaf_strategies.begin(); it != leaf_strategies.end(); ++it) {
+//       if (*it == value.get()) {
+//         stra_iter = it;
+//       }
+//     }
+//     CHECK(stra_iter != leaf_strategies.end());
+//     int idx = stra_iter - leaf_strategies.begin();
+//     strategyidx_ins[idx] = key;
+//   }
 
-  absl::flat_hash_map<int64_t, HloInstruction*>idx_ins;
-  for (int t = 0; t < R_val.size(); t++) {
-    for (const int64_t& recompute_idx : R_val[t]) {
-      HloInstruction* remat_ins;
-      auto iter = strategyidx_ins.find(t);
-      CHECK(iter != strategyidx_ins.end());
-      if (t == recompute_idx) {
-        remat_ins = const_cast<HloInstruction*>(iter->second);
-      } else {
-        remat_ins = remat_ins->parent()->AddInstruction(iter->second->Clone(/*suffix=*/"ckmt"));
-      }
-      for (int j = 0; j < remat_ins->operands().size(); j++) {
-        int64_t ins_id = -1;
-        auto operand = remat_ins->operands()[j];
-        // check if idx_ins already contains the operand
-        for (const auto& [key, value] : idx_ins) {
-          if (value == operand) {
-            ins_id = key;
-          }
-        }
-        if (ins_id == -1) {
-          // get the strategy id of the operand
-          for (const auto& [key, value] : strategyidx_ins) {
-            if (value == operand) {
-              ins_id = key;
-            }
-          }
-        }
-        CHECK(ins_id != -1);
-        TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(ins_id)->second));
-      }
-      // insert remat node to a correct location
-      // pass
+//   absl::flat_hash_map<int64_t, HloInstruction*>idx_ins;
+//   for (int t = 0; t < R_val.size(); t++) {
+//     for (const int64_t& recompute_idx : R_val[t]) {
+//       HloInstruction* remat_ins;
+//       auto iter = strategyidx_ins.find(t);
+//       CHECK(iter != strategyidx_ins.end());
+//       if (t == recompute_idx) {
+//         remat_ins = const_cast<HloInstruction*>(iter->second);
+//       } else {
+//         remat_ins = remat_ins->parent()->AddInstruction(iter->second->Clone(/*suffix=*/"ckmt"));
+//       }
+//       for (int j = 0; j < remat_ins->operands().size(); j++) {
+//         int64_t ins_id = -1;
+//         auto operand = remat_ins->operands()[j];
+//         // check if idx_ins already contains the operand
+//         for (const auto& [key, value] : idx_ins) {
+//           if (value == operand) {
+//             ins_id = key;
+//           }
+//         }
+//         if (ins_id == -1) {
+//           // get the strategy id of the operand
+//           for (const auto& [key, value] : strategyidx_ins) {
+//             if (value == operand) {
+//               ins_id = key;
+//             }
+//           }
+//         }
+//         CHECK(ins_id != -1);
+//         TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(ins_id)->second));
+//       }
+//       // insert remat node to a correct location
+//       // pass
 
-      // update idx_ins;
-      idx_ins[recompute_idx] = remat_ins;
-      // add control dependency
-    }
-  }
-}
+//       // update idx_ins;
+//       idx_ins[recompute_idx] = remat_ins;
+//       // add control dependency
+//     }
+//   }
+// }
 
 
 // Print liveness set for debugging.
@@ -2255,66 +2257,54 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
   // Initialize R_val
   std::vector<std::vector<int64_t>> R_val = std::vector<std::vector<int64_t>> (T, std::vector<int64_t> ());
   for (int64_t t = 0; t < T; ++t) {
-    for (int64_t i = 0; i < instructions.size(); ++i) {
+    for (int64_t i = 0; i < N; ++i) {
       if (A[t][i] == 1) R_val[t].push_back(i);
     }
   }
 
   std::cout << "CkmtRewrite " << instructions.size() << " " << s_val.size() << " " << a_val.size() << " " << leaf_strategies.size() << std::endl;
 
-  absl::flat_hash_map<int64_t, const HloInstruction*>strategyidx_ins;
-    for (auto& [key, value]: strategy_map) {
-    // skip tuple for now
-    if (value.get() -> is_tuple) continue;
-    auto stra_iter = leaf_strategies.end();
-    for (auto it = leaf_strategies.begin(); it != leaf_strategies.end(); ++it) {
-      if (*it == value.get()) {
-        stra_iter = it;
-      }
-    }
-    CHECK(stra_iter != leaf_strategies.end());
-    int idx = stra_iter - leaf_strategies.begin();
-    strategyidx_ins[idx] = key;
-  }
-
   absl::flat_hash_map<int64_t, HloInstruction*>idx_ins;
-  for (int t = 0; t < R_val.size(); t++) {
+  for (int t = 0; t < T; t++) {
     for (const int64_t& recompute_idx : R_val[t]) {
+      // get original instruction given the recompute id
+      const HloInstruction* strategy_ins = instructions[leaf_strategies[recompute_idx]->instruction_id];
       HloInstruction* remat_ins;
-      auto iter = strategyidx_ins.find(t);
-      CHECK(iter != strategyidx_ins.end());
       if ((recompute_idx >= segments[t][0]) && (recompute_idx < segments[t][1])) {
-        remat_ins = const_cast<HloInstruction*>(iter->second);
+        remat_ins = const_cast<HloInstruction*>(strategy_ins);
       } else {
-        std::cout <<  HloOpcodeString(iter->second->opcode())<< std::endl;
+        std::cout <<  HloOpcodeString(strategy_ins->opcode())<< std::endl;
         std::cout << recompute_idx << " " << t << " " << segments[t][0] << " " << segments[t][1] << std::endl;
-        remat_ins = remat_ins->parent()->AddInstruction(iter->second->Clone(/*suffix=*/"ckmt"));
+        remat_ins = remat_ins->parent()->AddInstruction(strategy_ins->Clone(/*suffix=*/"ckmt"));
       }
-      for (int j = 0; j < remat_ins->operands().size(); j++) {
-        int64_t ins_id = -1;
+      for (int j = 0; j < remat_ins->operands().size(); ++j) {
+        int64_t strategy_id = -1;
         auto operand = remat_ins->operands()[j];
+        // do not handle tuple for now
+        if (operand->opcode() == HloOpcode::kTuple) continue;
+        
         // check if idx_ins already contains the operand
         for (const auto& [key, value] : idx_ins) {
           if (value == operand) {
-            ins_id = key;
+            strategy_id = key;
           }
         }
-        if (ins_id == -1) {
-          // get the strategy id of the operand
-          for (const auto& [key, value] : strategyidx_ins) {
-            if (value == operand) {
-              ins_id = key;
-            }
+        if (strategy_id == -1) {
+          // 1. get the strategy of the operand
+          // 2. get the strategy id
+          for (auto iter = leaf_strategies.begin(); iter != leaf_strategies.end(); iter++) {
+            if (*iter == strategy_map[operand].get())
+              strategy_id = iter - leaf_strategies.begin();
           }
         }
-        CHECK(ins_id != -1);
+        CHECK(strategy_id != -1);
 
         std::cout << "BEFORE" << std::endl;
         std::cout <<  HloOpcodeString(remat_ins->opcode())<< std::endl;
-        std::cout << HloOpcodeString(idx_ins.find(ins_id)->second->opcode()) << std::endl;
+        std::cout << HloOpcodeString(idx_ins.find(strategy_id)->second->opcode()) << std::endl;
         std::cout << "AFTER" << std::endl;
 
-        TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(ins_id)->second));
+        TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(strategy_id)->second));
       }
       // insert remat node to a correct location
       // pass
@@ -2487,12 +2477,11 @@ StatusOr<bool> AutoSharding::Run(
                  solver_option);
 
   // ----- Generate new graph based on recompute stragegy -----
-  GenerateRecomputeGraph(leaf_strategies, R_val, strategy_map);
+  CkmtRewrite(s_val, a_val, b_val, T_org, strategy_map, leaf_strategies, alias_set, module, sequence);
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();
   // std::cerr << "=====================================" << std::endl;
-  CkmtRewrite(s_val, a_val, b_val, T_org, strategy_map, leaf_strategies, alias_set, module, sequence);
 
   return true;
 }
