@@ -1752,8 +1752,8 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double, std::vector<int64
     if (ins->IsElementwise()) elementwise_np.push_back(i);
     if (ins->opcode() == HloOpcode::kParameter) {
       param_np.push_back(i);
-      std::cout << HloOpcodeString(ins->opcode()) << std::endl;
     }
+    std::cout << HloOpcodeString(ins->opcode()) << std::endl;
   } 
 
   PyGILState_STATE gstate = PyGILState_Ensure();
@@ -1775,7 +1775,8 @@ std::tuple<std::vector<int64_t>, std::vector<int64_t>, double, std::vector<int64
         py::array(r_np.size(), r_np.data()),
         py::array(v_np.size(), v_np.data()),
         py::array(elementwise_np.size(), elementwise_np.data()),
-        py::array(param_np.size(), param_np.data()));
+        py::array(param_np.size(), param_np.data()),
+        instructions.size());
     if (ret.is_none()) {
       PyGILState_Release(gstate);
       exit(-1);
@@ -1992,67 +1993,6 @@ void SetHloSharding(const HloInstructionSequence& sequence,
   }
 }
 
-// void GenerateRecomputeGraph(const LeafStrategies& leaf_strategies,
-//                             const std::vector<std::vector<int64_t>>& R_val,
-//                             StrategyMap& strategy_map) {
-//   // key: index in the leaf_strategies, value: instruction*
-//   // does not handle HloTuple and its strategies for now
-//   absl::flat_hash_map<int64_t, const HloInstruction*>strategyidx_ins;
-//   for (auto& [key, value]: strategy_map) {
-//     // skip tuple for now
-//     if (value.get() -> is_tuple) continue;
-//     auto stra_iter = leaf_strategies.end();
-//     for (auto it = leaf_strategies.begin(); it != leaf_strategies.end(); ++it) {
-//       if (*it == value.get()) {
-//         stra_iter = it;
-//       }
-//     }
-//     CHECK(stra_iter != leaf_strategies.end());
-//     int idx = stra_iter - leaf_strategies.begin();
-//     strategyidx_ins[idx] = key;
-//   }
-
-//   absl::flat_hash_map<int64_t, HloInstruction*>idx_ins;
-//   for (int t = 0; t < R_val.size(); t++) {
-//     for (const int64_t& recompute_idx : R_val[t]) {
-//       HloInstruction* remat_ins;
-//       auto iter = strategyidx_ins.find(t);
-//       CHECK(iter != strategyidx_ins.end());
-//       if (t == recompute_idx) {
-//         remat_ins = const_cast<HloInstruction*>(iter->second);
-//       } else {
-//         remat_ins = remat_ins->parent()->AddInstruction(iter->second->Clone(/*suffix=*/"ckmt"));
-//       }
-//       for (int j = 0; j < remat_ins->operands().size(); j++) {
-//         int64_t ins_id = -1;
-//         auto operand = remat_ins->operands()[j];
-//         // check if idx_ins already contains the operand
-//         for (const auto& [key, value] : idx_ins) {
-//           if (value == operand) {
-//             ins_id = key;
-//           }
-//         }
-//         if (ins_id == -1) {
-//           // get the strategy id of the operand
-//           for (const auto& [key, value] : strategyidx_ins) {
-//             if (value == operand) {
-//               ins_id = key;
-//             }
-//           }
-//         }
-//         CHECK(ins_id != -1);
-//         TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(ins_id)->second));
-//       }
-//       // insert remat node to a correct location
-//       // pass
-
-//       // update idx_ins;
-//       idx_ins[recompute_idx] = remat_ins;
-//       // add control dependency
-//     }
-//   }
-// }
-
 
 // Print liveness set for debugging.
 std::string PrintLivenessSet(const LivenessSet& liveness_set) {
@@ -2224,11 +2164,10 @@ void DisableIncompatibleMixedMeshShapeAndForceBatchDim(
 }
 
 void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::vector<int64_t>& b_val, int64_t T_org,
-  StrategyMap& strategy_map, LeafStrategies& leaf_strategies, AliasSet& alias_set, HloModule* module,
+  StrategyMap& strategy_map, LeafStrategies& leaf_strategies,
   const HloInstructionSequence& sequence) {
 
   int64_t N = leaf_strategies.size();
-  HloComputation* entry_computation = module->entry_computation();
   const std::vector<HloInstruction*>& instructions = sequence.instructions();
 
   // Initialize segments
@@ -2262,7 +2201,7 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
     }
   }
 
-  std::cout << "CkmtRewrite " << instructions.size() << " " << s_val.size() << " " << a_val.size() << " " << leaf_strategies.size() << std::endl;
+  std::cout << "CkmtRewrite before" << instructions[0]->parent()->instruction_count() << std::endl;
 
   absl::flat_hash_map<int64_t, std::vector<HloInstruction*>>idx_ins;
   for (int t = 0; t < T; t++) {
@@ -2297,9 +2236,6 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
               strategy_id = iter - leaf_strategies.begin();
           }
         }
-        if (strategy_id == -1) {
-          std::cout << "[Error] " << operand->name() << " does not exist in leaf_strategies" << std::endl;
-        }
         CHECK(strategy_id != -1);
 
         TF_CHECK_OK(remat_ins->ReplaceOperandWith(remat_ins->operand_index(operand), idx_ins.find(strategy_id)->second.back()));
@@ -2318,6 +2254,8 @@ void CkmtRewrite(std::vector<int64_t>& s_val, std::vector<int64_t>& a_val, std::
       // add control dependency
     }
   }
+
+  std::cout << "CkmtRewrite after " << instructions[0]->parent()->instruction_count() << std::endl;
 }
 
 StatusOr<bool> AutoSharding::Run(
@@ -2481,7 +2419,7 @@ StatusOr<bool> AutoSharding::Run(
                  solver_option);
 
   // ----- Generate new graph based on recompute stragegy -----
-  CkmtRewrite(s_val, a_val, b_val, T_org, strategy_map, leaf_strategies, alias_set, module, sequence);
+  CkmtRewrite(s_val, a_val, b_val, T_org, strategy_map, leaf_strategies, sequence);
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();
