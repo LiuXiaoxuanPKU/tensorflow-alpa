@@ -78,6 +78,8 @@ struct AutoShardingSolverOption {
   // If it is not empty, forcibly use simple heuristic strategies
   // instead of the ILP solver. This is used for ablation study.
   std::string force_simple_heuristic;
+
+  bool use_ckmt;
 };
 
 // One sharding strategy

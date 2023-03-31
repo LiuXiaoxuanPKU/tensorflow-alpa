@@ -2166,12 +2166,12 @@ void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
                  const std::vector<std::vector<int64_t>>& segments,
                  StrategyMap& strategy_map, LeafStrategies& leaf_strategies,
                  const HloInstructionSequence& sequence) {
-  const int64_t N = leaf_strategies.size();
   const int64_t T = R_val.size();
   const std::vector<HloInstruction*>& instructions = sequence.instructions();
 
-  std::cout << "CkmtRewrite before"
+  std::cout << "CkmtRewrite before "
             << instructions[0]->parent()->instruction_count() << std::endl;
+  std::cout << instructions[0]->parent()->ToString() << std::endl;
 
   absl::flat_hash_map<int64_t, std::vector<HloInstruction*>> idx_ins;
   for (int t = 0; t < T; t++) {
@@ -2184,10 +2184,7 @@ void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
           (recompute_idx < segments[t][1])) {
         remat_ins = const_cast<HloInstruction*>(strategy_ins);
       } else {
-        std::cout << HloOpcodeString(strategy_ins->opcode()) << std::endl;
-        std::cout << recompute_idx << " " << t << " " << segments[t][0] << " "
-                  << segments[t][1] << std::endl;
-        remat_ins = remat_ins->parent()->AddInstruction(
+        remat_ins = instructions[0]->parent()->AddInstruction(
             strategy_ins->Clone(/*suffix=*/"ckmt"));
       }
       for (int j = 0; j < remat_ins->operands().size(); ++j) {
@@ -2208,14 +2205,19 @@ void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
           for (auto iter = leaf_strategies.begin();
                iter != leaf_strategies.end(); iter++) {
             if (*iter == strategy_map[operand].get())
-              strategy_id = iter - leaf_strategies.begin();
+              strategy_id = (*iter)->id;
           }
         }
-        CHECK(strategy_id != -1);
+        if (strategy_id == -1) {
+          std::cout << "[Warning] Could not find " << operand->name() << std::endl;
+          std::cout << "Current Node: " << remat_ins->name() << std::endl;
+        } else {
+          CHECK(strategy_id != -1);
 
-        TF_CHECK_OK(remat_ins->ReplaceOperandWith(
-            remat_ins->operand_index(operand),
-            idx_ins.find(strategy_id)->second.back()));
+          TF_CHECK_OK(remat_ins->ReplaceOperandWith(
+              remat_ins->operand_index(operand),
+              idx_ins.find(strategy_id)->second.back()));
+        }
       }
       // insert remat node to a correct location
       // pass
@@ -2229,12 +2231,13 @@ void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
         std::vector<HloInstruction*> remats = {remat_ins};
         idx_ins[recompute_idx] = remats;
       }
-      // add control dependency
+      // add control dependency ?
     }
   }
 
   std::cout << "CkmtRewrite after "
             << instructions[0]->parent()->instruction_count() << std::endl;
+  std::cout << instructions[0]->parent()->ToString() << std::endl;
 }
 
 StatusOr<bool> AutoSharding::Run(
@@ -2283,6 +2286,9 @@ StatusOr<bool> AutoSharding::Run(
       pass_context::GetBool("auto_sharding::load_solution_vector", false);
   solver_option.force_simple_heuristic =
       pass_context::GetString("auto_sharding::force_simple_heuristic", "");
+    
+  solver_option.use_ckmt = 
+      pass_context::GetBool("auto_sharding::use_ckmt", false);
 
   // ----- Read parameters of device mesh -----
   Array<int64_t> device_mesh(
@@ -2400,7 +2406,8 @@ StatusOr<bool> AutoSharding::Run(
                  solver_option);
 
   // ----- Generate new graph based on recompute stragegy -----
-  CkmtRewrite(R_val, segments, strategy_map, leaf_strategies, sequence);
+  if (solver_option.use_ckmt)
+    CkmtRewrite(R_val, segments, strategy_map, leaf_strategies, sequence);
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();
