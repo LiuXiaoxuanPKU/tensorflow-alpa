@@ -2165,36 +2165,39 @@ void DisableIncompatibleMixedMeshShapeAndForceBatchDim(
 void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
                  const std::vector<std::vector<int64_t>>& segments,
                  StrategyMap& strategy_map, LeafStrategies& leaf_strategies,
-                 const HloInstructionSequence& sequence) {
-  const int64_t T = R_val.size();
-  const std::vector<HloInstruction*>& instructions = sequence.instructions();
+                 HloInstructionSequence& sequence) {
+  const int64_t stages = R_val.size();
+  std::vector<HloInstruction*>& instructions = const_cast<std::vector<HloInstruction*>&>(sequence.instructions());
+  HloComputation* computation = instructions[0]->parent();
 
-  std::cout << "CkmtRewrite before "
-            << instructions[0]->parent()->instruction_count() << std::endl;
-  std::cout << instructions[0]->parent()->ToString() << std::endl;
+  LOG(ERROR) << "[CkmtRewrite] before "
+            << computation->instruction_count();
+  LOG(ERROR) << "[CkmtRewrite] " 
+            << computation->ToString();
 
-  absl::flat_hash_map<int64_t, std::vector<HloInstruction*>> idx_ins;
-  for (int t = 0; t < T; t++) {
-    for (const int64_t& recompute_idx : R_val[t]) {
+  absl::flat_hash_map<int64_t, std::vector<HloInstruction*>> strategyid_to_instruction_map;
+  for (int t = 0; t < stages; ++t) {
+    for (const int64_t recompute_idx : R_val[t]) {
       // get original instruction given the recompute id
-      const HloInstruction* strategy_ins =
+      CHECK(leaf_strategies[recompute_idx]->instruction_id < instructions.size());
+      HloInstruction* strategy_ins =
           instructions[leaf_strategies[recompute_idx]->instruction_id];
-      HloInstruction* remat_ins;
+      HloInstruction* remat_ins = nullptr;
       if ((recompute_idx >= segments[t][0]) &&
           (recompute_idx < segments[t][1])) {
-        remat_ins = const_cast<HloInstruction*>(strategy_ins);
+        remat_ins = strategy_ins;
       } else {
-        remat_ins = instructions[0]->parent()->AddInstruction(
+        remat_ins = computation->AddInstruction(
             strategy_ins->Clone(/*suffix=*/"ckmt"));
       }
       for (int j = 0; j < remat_ins->operands().size(); ++j) {
         int64_t strategy_id = -1;
-        auto operand = remat_ins->operands()[j];
+        HloInstruction* operand = remat_ins->operands()[j];
         // do not handle tuple for now
         if (operand->opcode() == HloOpcode::kTuple) continue;
 
-        // check if idx_ins already contains the operand
-        for (const auto& [key, value] : idx_ins) {
+        // check if strategyid_to_instruction_map already contains the operand
+        for (const auto& [key, value] : strategyid_to_instruction_map) {
           if (std::find(value.begin(), value.end(), operand) != value.end()) {
             strategy_id = key;
           }
@@ -2209,35 +2212,33 @@ void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
           }
         }
         if (strategy_id == -1) {
-          std::cout << "[Warning] Could not find " << operand->name() << std::endl;
-          std::cout << "Current Node: " << remat_ins->name() << std::endl;
+          LOG(ERROR) << "[CkmtRewrite] Could not find " << operand->name();
+          LOG(ERROR) << "[CkmtRewrite] Current Node: " << remat_ins->name();
         } else {
-          CHECK(strategy_id != -1);
-
           TF_CHECK_OK(remat_ins->ReplaceOperandWith(
               remat_ins->operand_index(operand),
-              idx_ins.find(strategy_id)->second.back()));
+              strategyid_to_instruction_map.find(strategy_id)->second.back()));
         }
       }
       // insert remat node to a correct location
       // pass
 
-      // update idx_ins;
-      std::cout << "[INFO] " << t << " Add " << remat_ins->name()
-                << " to idx_ins with id " << recompute_idx << std::endl;
-      if (idx_ins.count(recompute_idx)) {
-        idx_ins[recompute_idx].push_back(remat_ins);
+      // update strategyid_to_instruction_map;
+      LOG(ERROR) << "[CkmtRewrite] " << t << " Add " << remat_ins->name()
+                << " to strategyid_to_instruction_map with id " << recompute_idx;
+      if (strategyid_to_instruction_map.count(recompute_idx)) {
+        strategyid_to_instruction_map[recompute_idx].push_back(remat_ins);
       } else {
         std::vector<HloInstruction*> remats = {remat_ins};
-        idx_ins[recompute_idx] = remats;
+        strategyid_to_instruction_map[recompute_idx] = remats;
       }
       // add control dependency ?
     }
   }
 
-  std::cout << "CkmtRewrite after "
-            << instructions[0]->parent()->instruction_count() << std::endl;
-  std::cout << instructions[0]->parent()->ToString() << std::endl;
+  LOG(ERROR) << "[CkmtRewrite] " << "CkmtRewrite after "
+            << instructions[0]->parent()->instruction_count();
+  LOG(ERROR) << "[CkmtRewrite] " << instructions[0]->parent()->ToString();
 }
 
 StatusOr<bool> AutoSharding::Run(
@@ -2378,7 +2379,6 @@ StatusOr<bool> AutoSharding::Run(
   // ----- Call the ILP solver -----
   std::vector<int64_t> s_val, e_val;
   std::vector<std::vector<int64_t>> R_val, segments;
-  int64_t T_org;
   double objective = -1.0;
   if (!solver_option.load_solution_vector) {
     std::tie(s_val, e_val, R_val, segments, objective) =
@@ -2407,7 +2407,7 @@ StatusOr<bool> AutoSharding::Run(
 
   // ----- Generate new graph based on recompute stragegy -----
   if (solver_option.use_ckmt)
-    CkmtRewrite(R_val, segments, strategy_map, leaf_strategies, sequence);
+    CkmtRewrite(R_val, segments, strategy_map, leaf_strategies, const_cast<HloInstructionSequence&>(sequence));
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();
