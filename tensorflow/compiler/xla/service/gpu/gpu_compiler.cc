@@ -621,88 +621,88 @@ Status GpuCompiler::OptimizeHloModule(
   TF_RETURN_IF_ERROR(OptimizeHloPostLayoutAssignment(hlo_module, stream_exec,
                                                      device_allocator));
 
-  {
-    HloPassFix<HloPassPipeline> fusion("fusion");
-    // We try to split variadic ops with many parameters into several such ops
-    // to avoid exceeding the parameter space.
-    fusion.AddPass<VariadicOpSplitter>();
-    AddHloVerifier(
-        &fusion,
-        HloVerifierOpts{}.MakeLayoutSensitive().WithInstructionCanChangeLayout(
-            LayoutAssignment::InstructionCanChangeLayout),
-        /*debug_only=*/true);
-    fusion.AddPass<GpuInstructionFusion>(/*may_duplicate=*/false);
-    fusion.AddPass<GpuInstructionFusion>(/*may_duplicate=*/true);
-    fusion.AddPass<FusionMerger>();
-    fusion.AddPass<GpuMultiOutputFusion>();
-    fusion.AddPass<HloCSE>(/*is_layout_sensitive=*/true,
-                           /*only_fusion_computations=*/true);
-    fusion.AddPass<HloDCE>();
-    TF_RETURN_IF_ERROR(fusion.Run(hlo_module).status());
-  }
+  // {
+  //   HloPassFix<HloPassPipeline> fusion("fusion");
+  //   // We try to split variadic ops with many parameters into several such ops
+  //   // to avoid exceeding the parameter space.
+  //   fusion.AddPass<VariadicOpSplitter>();
+  //   AddHloVerifier(
+  //       &fusion,
+  //       HloVerifierOpts{}.MakeLayoutSensitive().WithInstructionCanChangeLayout(
+  //           LayoutAssignment::InstructionCanChangeLayout),
+  //       /*debug_only=*/true);
+  //   fusion.AddPass<GpuInstructionFusion>(/*may_duplicate=*/false);
+  //   fusion.AddPass<GpuInstructionFusion>(/*may_duplicate=*/true);
+  //   fusion.AddPass<FusionMerger>();
+  //   fusion.AddPass<GpuMultiOutputFusion>();
+  //   fusion.AddPass<HloCSE>(/*is_layout_sensitive=*/true,
+  //                          /*only_fusion_computations=*/true);
+  //   fusion.AddPass<HloDCE>();
+  //   TF_RETURN_IF_ERROR(fusion.Run(hlo_module).status());
+  // }
 
-  {
-    HloPassFix<HloPassPipeline> horizontal_fusion("horizontal fusion");
-    horizontal_fusion.AddPass<GpuHorizontalLoopFusion>();
-    horizontal_fusion.AddPass<GpuHorizontalInputFusion>();
-    // FusionBitcastLift must be after InstructionFusion, as it undoes
-    // part of it.
-    horizontal_fusion.AddPass<FusionBitcastLift>();
-    horizontal_fusion.AddPass<HloCSE>(/*is_layout_sensitive=*/true,
-                                      /*only_fusion_computations=*/true);
-    horizontal_fusion.AddPass<HloDCE>();
-    TF_RETURN_IF_ERROR(horizontal_fusion.Run(hlo_module).status());
-  }
+  // {
+  //   HloPassFix<HloPassPipeline> horizontal_fusion("horizontal fusion");
+  //   horizontal_fusion.AddPass<GpuHorizontalLoopFusion>();
+  //   horizontal_fusion.AddPass<GpuHorizontalInputFusion>();
+  //   // FusionBitcastLift must be after InstructionFusion, as it undoes
+  //   // part of it.
+  //   horizontal_fusion.AddPass<FusionBitcastLift>();
+  //   horizontal_fusion.AddPass<HloCSE>(/*is_layout_sensitive=*/true,
+  //                                     /*only_fusion_computations=*/true);
+  //   horizontal_fusion.AddPass<HloDCE>();
+  //   TF_RETURN_IF_ERROR(horizontal_fusion.Run(hlo_module).status());
+  // }
 
-  if (VLOG_IS_ON(2)) {
-    HloFusionStatsVisitor stats;
-    TF_RETURN_IF_ERROR(hlo_module->entry_computation()->Accept(&stats));
-    VLOG(2) << stats.ToString();
-  }
+  // if (VLOG_IS_ON(2)) {
+  //   HloFusionStatsVisitor stats;
+  //   TF_RETURN_IF_ERROR(hlo_module->entry_computation()->Accept(&stats));
+  //   VLOG(2) << stats.ToString();
+  // }
 
-  {
-    HloPassPipeline pipeline("post-fusion optimization");
-    pipeline.AddPass<AllGatherCombiner>(
-        /*combine_threshold_in_bytes=*/
-        pass_context::GetInt("combiner::all_gather_threshold", 1024 * 1024 * 1024),
-        /*combine_threshold_count=*/512);
-    pipeline.AddPass<AllReduceCombiner>(
-        /*combine_threshold_in_bytes=*/
-        pass_context::GetInt("combiner::all_reduce_threshold",
-                             debug_options.xla_gpu_all_reduce_combine_threshold_bytes()),
-        /*combine_threshold_count=*/512);
-    pipeline.AddPass<ReduceScatterCombiner>(
-        /*combine_threshold_in_bytes=*/
-        pass_context::GetInt("combiner::all_reduce_threshold", 30 * 1024 * 1024),
-        /*combine_threshold_count=*/512);
+  // {
+  //   HloPassPipeline pipeline("post-fusion optimization");
+  //   pipeline.AddPass<AllGatherCombiner>(
+  //       /*combine_threshold_in_bytes=*/
+  //       pass_context::GetInt("combiner::all_gather_threshold", 1024 * 1024 * 1024),
+  //       /*combine_threshold_count=*/512);
+  //   pipeline.AddPass<AllReduceCombiner>(
+  //       /*combine_threshold_in_bytes=*/
+  //       pass_context::GetInt("combiner::all_reduce_threshold",
+  //                            debug_options.xla_gpu_all_reduce_combine_threshold_bytes()),
+  //       /*combine_threshold_count=*/512);
+  //   pipeline.AddPass<ReduceScatterCombiner>(
+  //       /*combine_threshold_in_bytes=*/
+  //       pass_context::GetInt("combiner::all_reduce_threshold", 30 * 1024 * 1024),
+  //       /*combine_threshold_count=*/512);
 
-    if (true || debug_options.xla_gpu_all_reduce_contiguous()) {
-      pipeline.AddPass<AllReduceContiguous>();
-    }
+  //   if (true || debug_options.xla_gpu_all_reduce_contiguous()) {
+  //     pipeline.AddPass<AllReduceContiguous>();
+  //   }
 
-    int32_t blueconnect_num_devices_per_host =
-        debug_options.xla_gpu_all_reduce_blueconnect_num_devices_per_host();
-    if (blueconnect_num_devices_per_host > 0) {
-      pipeline.AddPass<AllReduceBlueConnect>(blueconnect_num_devices_per_host);
-    }
+  //   int32_t blueconnect_num_devices_per_host =
+  //       debug_options.xla_gpu_all_reduce_blueconnect_num_devices_per_host();
+  //   if (blueconnect_num_devices_per_host > 0) {
+  //     pipeline.AddPass<AllReduceBlueConnect>(blueconnect_num_devices_per_host);
+  //   }
 
-    if (debug_options.xla_gpu_enable_async_all_reduce()) {
-      AsyncCollectiveCreator::CollectiveCreatorConfig config;
-      config.convert_all_reduce = [](const HloInstruction*) { return true; };
-      pipeline.AddPass<AsyncCollectiveCreator>(std::move(config));
-    }
+  //   if (debug_options.xla_gpu_enable_async_all_reduce()) {
+  //     AsyncCollectiveCreator::CollectiveCreatorConfig config;
+  //     config.convert_all_reduce = [](const HloInstruction*) { return true; };
+  //     pipeline.AddPass<AsyncCollectiveCreator>(std::move(config));
+  //   }
 
-    pipeline.AddPass<CollectivesScheduleLinearizer>();
+  //   pipeline.AddPass<CollectivesScheduleLinearizer>();
 
-    AlgebraicSimplifierOptions options = layout_insensitive_algsimp_opts;
-    options.set_is_layout_sensitive(true);
-    pipeline.AddPass<AlgebraicSimplifier>(options);
-    pipeline.AddPass<OptimizationBarrierExpander>();
-    pipeline.AddPass<BitcastDecomposer>();
-    pipeline.AddPass<TupleSimplifier>();
+  //   AlgebraicSimplifierOptions options = layout_insensitive_algsimp_opts;
+  //   options.set_is_layout_sensitive(true);
+  //   pipeline.AddPass<AlgebraicSimplifier>(options);
+  //   pipeline.AddPass<OptimizationBarrierExpander>();
+  //   pipeline.AddPass<BitcastDecomposer>();
+  //   pipeline.AddPass<TupleSimplifier>();
 
-    TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
-  }
+  //   TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+  // }
 
   if (pass_context::GetBool("done-event::enable", false)) {
     HloPassPipeline pipeline("done event insertion");
@@ -1042,6 +1042,14 @@ static Status CompileModuleToLlvmIrImpl(
 
   TF_ASSIGN_OR_RETURN(HloSchedule hlo_schedule,
                       ScheduleGpuModule(hlo_module, pointer_size));
+
+  // const HloComputation* computation = hlo_module->entry_computation();
+  // if (computation != nullptr) {
+  //   const std::vector<HloInstruction*>& instructions = hlo_schedule.sequence(computation).instructions();
+  //   for (size_t i = 0; i < instructions.size(); ++i) {
+  //     LOG(ERROR) << "[in llvmir] Time " << i << ": " << instructions[i]->name();
+  //   }
+  // }
 
   auto buffer_size_bytes_function =
       [pointer_size](const BufferValue& buffer_value) -> int64_t {

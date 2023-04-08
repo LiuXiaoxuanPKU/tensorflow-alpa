@@ -4519,16 +4519,36 @@ std::unique_ptr<SpmdPartitioningVisitor> SpmdPartitioner::CreateVisitor(
       next_channel_id, logger, std::move(options), this, call_graph);
 }
 
+// Print dep graph for debugging.
+std::string PrintExecGraphSpmd(const HloComputation* computation) {
+  const std::vector<HloInstruction*>& instructions =
+      computation->MakeInstructionPostOrder();
+
+  std::ostringstream os;
+  os << "Execution order" << std::endl;
+  for (size_t i = 0; i < instructions.size(); ++i) {
+    std::vector<std::string> names;
+    for (const HloInstruction* operand : instructions[i]->operands()) {
+      names.push_back(operand->name());
+    }
+    std::string line;
+    absl::StrAppendFormat(&line, "%s --> ", instructions[i]->name());
+    for (const std::string& name : names) {
+      absl::StrAppendFormat(&line, "%s, ", name);
+    }
+    os << "Time " << i << ": " << line << std::endl;
+  }
+  return os.str();
+}
+
 StatusOr<bool> SpmdPartitioner::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   TF_RETURN_IF_ERROR(PreprocessSharding(module, execution_threads));
   TF_RETURN_IF_ERROR(PreprocessHlos(module, execution_threads));
 
-  //std::cerr << "===== Enter SPMD Partitioner =====" << std::endl;
-  //std::cerr << module->ToString();
-  //std::cerr << "=====================================" << std::endl;
-
+  std::cout << "Enter SPMD=====================================" << std::endl;
+  std::cout << PrintExecGraphSpmd(module->entry_computation());
   XLA_VLOG_LINES(1, SpmdLogger::ReportBeforePartition(
                         *module, options_.report_instruction_count));
 
@@ -4564,6 +4584,10 @@ StatusOr<bool> SpmdPartitioner::Run(
       PartitionComputation(module->entry_computation(), root_sharding,
                            &next_channel_id, &logger, *call_graph));
   changed |= partition_changed;
+
+  std::cout << "After Partitioned=====================================" << std::endl;
+  std::cout << PrintExecGraphSpmd(module->entry_computation());
+
 
   // For the entry computation, make sure that the root instruction and the
   // parameters preserve their signatures.
@@ -4612,6 +4636,8 @@ StatusOr<bool> SpmdPartitioner::Run(
   XLA_VLOG_LINES(1, logger.MakeReport());
 
   if (changed) {
+    std::cout << "Enter Changed=====================================" << std::endl;
+    std::cout << PrintExecGraphSpmd(module->entry_computation());
     HloPassPipeline pass("spmd-cleanup");
     pass.AddPass<HloDCE>(/*remove_cross_partition_collective_ops=*/true);
     pass.AddPass<TupleSimplifier>();
@@ -4619,6 +4645,8 @@ StatusOr<bool> SpmdPartitioner::Run(
     pass.AddPass<HloCSE>(/*is_layout_sensitive=*/false);
     pass.AddPass<FlattenCallGraph>();
     TF_RETURN_IF_ERROR(pass.Run(module, execution_threads).status());
+    std::cout << "After Changed=====================================" << std::endl;
+    std::cout << PrintExecGraphSpmd(module->entry_computation());
   }
 
   TF_RETURN_IF_ERROR(ClearShardingAttributes(module, execution_threads));
@@ -4932,9 +4960,9 @@ Status SpmdPartitioner::PreprocessHlos(
     }
   }
 
-  //std::cerr << "===== Exit SPMD Partitioner =====" << std::endl;
-  //std::cerr << module->ToString();
-  //std::cerr << "=====================================" << std::endl;
+  // std::cerr << "===== Exit SPMD Partitioner =====" << std::endl;
+  // std::cerr << module->ToString();
+  // std::cerr << "=====================================" << std::endl;
 
   return OkStatus();
 }

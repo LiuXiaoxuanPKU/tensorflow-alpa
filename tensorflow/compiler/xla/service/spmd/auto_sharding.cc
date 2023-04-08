@@ -1484,15 +1484,6 @@ BuildStrategyAndCost(const HloInstructionSequence& sequence,
     }
   }
 
-  std::cout << "Instruction size in BuildStrategyAndCost "
-            << instructions.size() << std::endl;
-  std::cout << "Leaf strategies size in BuildStrategyAndCost "
-            << leaf_strategies.size() << std::endl;
-
-  for (StrategyVector* sv : leaf_strategies) {
-    std::cout << sv->instruction_id << std::endl;
-  }
-
   return std::make_tuple(std::move(strategy_map), std::move(leaf_strategies),
                          std::move(associative_dot_pairs));
 }
@@ -1593,7 +1584,7 @@ CallSolver(const HloInstructionSequence& sequence,
            const LeafStrategies& leaf_strategies, const CostGraph& cost_graph,
            const AliasSet& alias_set) {
   const std::vector<HloInstruction*>& instructions = sequence.instructions();
-  std::cout << "instructions size " << instructions.size() << std::endl;
+
   // Serialize edges and edge costs to 1d numpy arrays
   int64_t N = leaf_strategies.size();
   int64_t M =
@@ -1824,9 +1815,6 @@ void SetHloSharding(const HloInstructionSequence& sequence,
   // Set the HloSharding for every instruction
   const std::vector<HloInstruction*>& instructions = sequence.instructions();
   const Array<int64_t>& device_mesh = cluster_env.device_mesh;
-  std::cout << "instruction size in SetHloShardiing " << instructions.size()
-            << std::endl;
-  std::cout << "s_val size in SetHloSharding " << s_val.size() << std::endl;
 
   for (HloInstruction* inst : instructions) {
     if (inst->has_sharding()) {  // its sharding has been forcibly set
@@ -2162,24 +2150,62 @@ void DisableIncompatibleMixedMeshShapeAndForceBatchDim(
   }
 }
 
+// Print dep graph for debugging.
+std::string PrintExecGraph(const HloComputation* computation) {
+  auto size_fn = [](const BufferValue& buffer) {
+    return GetBytes(buffer.shape());
+  };
+  HloSchedule schedule =
+      ScheduleModule(computation->parent(), size_fn,
+                     ComputationSchedulerToModuleScheduler(DFSMemoryScheduler))
+          .ValueOrDie();
+
+  const std::vector<HloInstruction*>& instructions =
+      schedule.sequence(computation).instructions();
+
+  std::ostringstream os;
+  os << "Execution order" << std::endl;
+  for (size_t i = 0; i < instructions.size(); ++i) {
+    std::vector<std::string> names;
+    for (const HloInstruction* operand : instructions[i]->operands()) {
+      names.push_back(operand->name());
+    }
+    std::string line;
+    absl::StrAppendFormat(&line, "%s --> ", instructions[i]->name());
+    for (const std::string& name : names) {
+      absl::StrAppendFormat(&line, "%s, ", name);
+    }
+    os << "Time " << i << ": " << line << std::endl;
+  }
+  return os.str();
+}
+
 void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
                  const std::vector<std::vector<int64_t>>& segments,
                  StrategyMap& strategy_map, LeafStrategies& leaf_strategies,
                  HloInstructionSequence& sequence) {
   const int64_t stages = R_val.size();
-  std::vector<HloInstruction*>& instructions = const_cast<std::vector<HloInstruction*>&>(sequence.instructions());
+  std::vector<HloInstruction*>& instructions =
+      const_cast<std::vector<HloInstruction*>&>(sequence.instructions());
   HloComputation* computation = instructions[0]->parent();
+  LOG(ERROR) << "[CkmtRewrite] Before" << PrintExecGraph(computation);
 
-  LOG(ERROR) << "[CkmtRewrite] before "
-            << computation->instruction_count();
-  LOG(ERROR) << "[CkmtRewrite] " 
-            << computation->ToString();
+  // LOG(INFO) << "[CkmtRewrite] before "
+  //           << computation->instruction_count() << " " << instructions.size()
+  //           << " " << leaf_strategies.size();
+  // LOG(ERROR) << "[CkmtRewrite] Before"
+  //           << computation->ToString();
 
-  absl::flat_hash_map<int64_t, std::vector<HloInstruction*>> strategyid_to_instruction_map;
+  absl::flat_hash_map<int64_t, std::vector<HloInstruction*>>
+      strategyid_to_instruction_map;
+  HloInstruction* last_inst = nullptr;
+
   for (int t = 0; t < stages; ++t) {
     for (const int64_t recompute_idx : R_val[t]) {
       // get original instruction given the recompute id
-      CHECK(leaf_strategies[recompute_idx]->instruction_id < instructions.size());
+      bool is_remat = false;
+      CHECK(leaf_strategies[recompute_idx]->instruction_id <
+            instructions.size());
       HloInstruction* strategy_ins =
           instructions[leaf_strategies[recompute_idx]->instruction_id];
       HloInstruction* remat_ins = nullptr;
@@ -2187,9 +2213,16 @@ void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
           (recompute_idx < segments[t][1])) {
         remat_ins = strategy_ins;
       } else {
-        remat_ins = computation->AddInstruction(
-            strategy_ins->Clone(/*suffix=*/"ckmt"));
+        LOG(ERROR) << "[CkmtRewrite] Remat " << strategy_ins->name();
+        remat_ins =
+            computation->AddInstruction(strategy_ins->Clone(/*suffix=*/"ckmt"));
+        is_remat = true;
       }
+      // add control dependency
+      if (last_inst != nullptr && remat_ins->opcode() != HloOpcode::kTuple) {
+        last_inst->AddControlDependencyTo(remat_ins);
+      }
+
       for (int j = 0; j < remat_ins->operands().size(); ++j) {
         int64_t strategy_id = -1;
         HloInstruction* operand = remat_ins->operands()[j];
@@ -2203,42 +2236,53 @@ void CkmtRewrite(const std::vector<std::vector<int64_t>>& R_val,
           }
         }
         if (strategy_id == -1) {
-          // 1. get the strategy of the operand
-          // 2. get the strategy id
-          for (auto iter = leaf_strategies.begin();
-               iter != leaf_strategies.end(); iter++) {
-            if (*iter == strategy_map[operand].get())
-              strategy_id = (*iter)->id;
-          }
-        }
-        if (strategy_id == -1) {
-          LOG(ERROR) << "[CkmtRewrite] Could not find " << operand->name();
-          LOG(ERROR) << "[CkmtRewrite] Current Node: " << remat_ins->name();
+          // it's possible that an operand is not in instructions
+          // because setHlo will add reshape instructions that are not
+          // caught in sequence
+          // just ignore those reshape for now (never recompute reshape added by
+          // setHlo)
+          CHECK(operand->opcode() == HloOpcode::kReshape);
         } else {
-          TF_CHECK_OK(remat_ins->ReplaceOperandWith(
-              remat_ins->operand_index(operand),
-              strategyid_to_instruction_map.find(strategy_id)->second.back()));
+          if (operand !=
+              strategyid_to_instruction_map.find(strategy_id)->second.back()) {
+            LOG(ERROR) << "[CkmtRewrite] Remat "
+                       << "Replace " << operand->name() << " with "
+                       << strategyid_to_instruction_map.find(strategy_id)
+                              ->second.back()
+                              ->name();
+            TF_CHECK_OK(remat_ins->ReplaceOperandWith(
+                remat_ins->operand_index(operand),
+                strategyid_to_instruction_map.find(strategy_id)
+                    ->second.back()));
+          }
         }
       }
       // insert remat node to a correct location
       // pass
 
+      if (is_remat) {
+        // Insert an identity to prevent CSE
+        // remat node has at least one operand
+        HloInstruction* first_operand = remat_ins->operands()[0];
+        HloInstruction* identity =
+            computation->AddInstruction(HloInstruction::CreateCustomCall(
+                first_operand->shape(), {first_operand}, "identity"));
+        ReplaceOperand(remat_ins, first_operand, identity);
+      }
+
       // update strategyid_to_instruction_map;
-      LOG(ERROR) << "[CkmtRewrite] " << t << " Add " << remat_ins->name()
-                << " to strategyid_to_instruction_map with id " << recompute_idx;
       if (strategyid_to_instruction_map.count(recompute_idx)) {
         strategyid_to_instruction_map[recompute_idx].push_back(remat_ins);
       } else {
         std::vector<HloInstruction*> remats = {remat_ins};
         strategyid_to_instruction_map[recompute_idx] = remats;
       }
-      // add control dependency ?
+
+      last_inst = remat_ins;
     }
   }
 
-  LOG(ERROR) << "[CkmtRewrite] " << "CkmtRewrite after "
-            << instructions[0]->parent()->instruction_count();
-  LOG(ERROR) << "[CkmtRewrite] " << instructions[0]->parent()->ToString();
+  LOG(ERROR) << "[CkmtRewrite] After" << PrintExecGraph(computation);
 }
 
 StatusOr<bool> AutoSharding::Run(
@@ -2287,8 +2331,8 @@ StatusOr<bool> AutoSharding::Run(
       pass_context::GetBool("auto_sharding::load_solution_vector", false);
   solver_option.force_simple_heuristic =
       pass_context::GetString("auto_sharding::force_simple_heuristic", "");
-    
-  solver_option.use_ckmt = 
+
+  solver_option.use_ckmt =
       pass_context::GetBool("auto_sharding::use_ckmt", false);
 
   // ----- Read parameters of device mesh -----
@@ -2320,8 +2364,6 @@ StatusOr<bool> AutoSharding::Run(
                                      ComputationSchedulerToModuleScheduler(
                                          DFSMemoryScheduler)));
   const HloComputation* entry_computation = module->entry_computation();
-  std::cout << "Entry computation instruction count "
-            << entry_computation->instruction_count() << std::endl;
   std::unique_ptr<HloAliasAnalysis> alias_analysis =
       HloAliasAnalysis::Run(module).ValueOrDie();
   AliasMap alias_map =
@@ -2407,7 +2449,8 @@ StatusOr<bool> AutoSharding::Run(
 
   // ----- Generate new graph based on recompute stragegy -----
   if (solver_option.use_ckmt)
-    CkmtRewrite(R_val, segments, strategy_map, leaf_strategies, const_cast<HloInstructionSequence&>(sequence));
+    CkmtRewrite(R_val, segments, strategy_map, leaf_strategies,
+                const_cast<HloInstructionSequence&>(sequence));
 
   // std::cerr << "===== Exit AutoSharding =====" << std::endl;
   // std::cerr << module->ToString();

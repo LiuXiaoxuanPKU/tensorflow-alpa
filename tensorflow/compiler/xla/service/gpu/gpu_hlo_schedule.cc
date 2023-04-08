@@ -159,7 +159,7 @@ StatusOr<HloSchedule> ScheduleGpuModule(const HloModule* module,
         return ShapeUtil::ByteSizeOf(buffer.shape(), pointer_size);
       },
       ComputationSchedulerToModuleScheduler(
-          DefaultMemoryScheduler,
+          DFSMemoryScheduler,
           PostprocessorToScheduleAsEarlyOrLateAsPossible));
 }
 

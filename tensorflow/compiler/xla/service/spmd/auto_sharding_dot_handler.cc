@@ -324,7 +324,20 @@ class DotHandler {
     }
   }
 
+  void AddDuplicateStrategy() {
+    std::string name = absl::StrFormat("RR = RR x RR");
+    HloSharding output_spec = HloSharding::Replicate();
+    HloSharding lhs_spec = HloSharding::Replicate();
+    HloSharding rhs_spec = HloSharding::Replicate();
+
+    AppendNewStrategy(ins, name, output_spec, {lhs_spec, rhs_spec}, 0, 0,
+                        cluster_env, strategy_map, strategies);
+  }
+
   Status RegisterStrategies() {
+    // RR = RR x RR
+    AddDuplicateStrategy();
+
     // SS = SR x RS
     // Split lhs space dim and rhs space dim.
     SplitLhsSpaceRhsSpace(0, 1);
@@ -535,6 +548,16 @@ class ConvHandler {
     }
   }
 
+  void AddDuplicateStrategy() {
+    std::string name = absl::StrFormat("RR = RR x RR");
+      HloSharding output_spec = HloSharding::Replicate();
+      HloSharding lhs_spec = HloSharding::Replicate();
+      HloSharding rhs_spec = HloSharding::Replicate();
+
+      AppendNewStrategy(ins, name, output_spec, {lhs_spec, rhs_spec}, 0, 0,
+                        cluster_env, strategy_map, strategies);
+  }
+
   void Add1DDataParallel() {
     if (device_mesh.dim(0) > 1 && device_mesh.dim(1) > 1) {
       int mesh_dim = 0;
@@ -613,6 +636,9 @@ class ConvHandler {
       SplitDepthwise(0, 1, false);
       SplitDepthwise(1, 0, false);
     }
+
+    // RR = RR x RR
+    AddDuplicateStrategy();
 
     // SS = SR x RS
     // Split lhs batch dim and rhs out_channel dim.
